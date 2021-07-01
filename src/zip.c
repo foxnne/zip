@@ -100,8 +100,8 @@ enum zip_modify_t {
 struct zip_entry_mark_t {
   int file_index;
   enum zip_modify_t type;
-  mz_uint64 m_local_header_ofs;
-  mz_uint64 lf_length;
+  size_t m_local_header_ofs;
+  size_t lf_length;
 };
 
 static const char *const zip_errlist[30] = {
@@ -460,7 +460,7 @@ static int zip_entry_mark(struct zip_t *zip,
   return err;
 }
 
-static int zip_index_next(mz_uint64 *local_header_ofs_array, int cur_index) {
+static int zip_index_next(size_t *local_header_ofs_array, int cur_index) {
   int new_index = 0;
   for (int i = cur_index - 1; i >= 0; --i) {
     if (local_header_ofs_array[cur_index] > local_header_ofs_array[i]) {
@@ -471,11 +471,11 @@ static int zip_index_next(mz_uint64 *local_header_ofs_array, int cur_index) {
   return new_index;
 }
 
-static int zip_sort(mz_uint64 *local_header_ofs_array, int cur_index) {
+static int zip_sort(size_t *local_header_ofs_array, int cur_index) {
   int nxt_index = zip_index_next(local_header_ofs_array, cur_index);
 
   if (nxt_index != cur_index) {
-    mz_uint64 temp = local_header_ofs_array[cur_index];
+    size_t temp = local_header_ofs_array[cur_index];
     for (int i = cur_index; i > nxt_index; i--) {
       local_header_ofs_array[i] = local_header_ofs_array[i - 1];
     }
@@ -499,7 +499,7 @@ static int zip_entry_finalize(struct zip_t *zip,
                               struct zip_entry_mark_t *entry_mark,
                               const int n) {
 
-  mz_uint64 *local_header_ofs_array = (mz_uint64 *)calloc(n, sizeof(mz_uint64));
+  size_t *local_header_ofs_array = (size_t *)calloc(n, sizeof(size_t));
   if (!local_header_ofs_array) {
     return ZIP_EOOMEM;
   }
@@ -514,7 +514,7 @@ static int zip_entry_finalize(struct zip_t *zip,
     entry_mark[i].file_index = index;
   }
 
-  mz_uint64 *length = (mz_uint64 *)calloc(n, sizeof(mz_uint64));
+  size_t *length = (size_t *)calloc(n, sizeof(size_t));
   if (!length) {
     CLEANUP(local_header_ofs_array);
     return ZIP_EOOMEM;
@@ -522,7 +522,7 @@ static int zip_entry_finalize(struct zip_t *zip,
   for (int i = 0; i < n - 1; i++) {
     length[i] = local_header_ofs_array[i + 1] - local_header_ofs_array[i];
   }
-  length[n - 1] = zip->archive.m_archive_size - local_header_ofs_array[n - 1];
+  length[n - 1] = (size_t)zip->archive.m_archive_size - local_header_ofs_array[n - 1];
 
   for (int i = 0; i < n; i++) {
     entry_mark[i].lf_length = length[entry_mark[i].file_index];
@@ -546,11 +546,11 @@ static int zip_entry_set(struct zip_t *zip, struct zip_entry_mark_t *entry_mark,
   return 0;
 }
 
-static mz_int64 zip_file_move(MZ_FILE *m_pFile, const mz_uint64 to,
-                              const mz_uint64 from, const mz_uint64 length,
+static ssize_t zip_file_move(MZ_FILE *m_pFile, const mz_uint64 to,
+                              const mz_uint64 from, const size_t length,
                               mz_uint8 *move_buf,
-                              const mz_int64 capacity_size) {
-  if ((mz_int64)length > capacity_size) {
+                              const size_t capacity_size) {
+  if (length > capacity_size) {
     return ZIP_ECAPSIZE;
   }
   if (MZ_FSEEK64(m_pFile, from, SEEK_SET)) {
@@ -570,24 +570,23 @@ static mz_int64 zip_file_move(MZ_FILE *m_pFile, const mz_uint64 to,
     MZ_FCLOSE(m_pFile);
     return ZIP_EFWRITE;
   }
-  return (mz_int64)length;
+  return (ssize_t)length;
 }
 
-static mz_int64 zip_files_move(MZ_FILE *m_pFile, mz_uint64 writen_num,
-                               mz_uint64 read_num, mz_uint64 length) {
-  int n = 0;
-  const mz_int64 page_size = 1 << 12; // 4K
+static ssize_t zip_files_move(MZ_FILE *m_pFile, mz_uint64 writen_num,
+                               mz_uint64 read_num, size_t length) {
+  ssize_t n = 0;
+  const size_t page_size = 1 << 12; // 4K
   mz_uint8 *move_buf = (mz_uint8 *)calloc(1, page_size);
-  if (move_buf == NULL) {
+  if (!move_buf) {
     return ZIP_EOOMEM;
   }
 
-  mz_int64 moved_length = 0;
-  mz_int64 move_count = 0;
+  ssize_t moved_length = 0;
+  ssize_t move_count = 0;
   while ((mz_int64)length > 0) {
-    move_count = ((mz_int64)length >= page_size) ? page_size : (mz_int64)length;
-    n = zip_file_move(m_pFile, writen_num, read_num, move_count, move_buf,
-                      page_size);
+    move_count = (length >= page_size) ? page_size : length;
+    n = zip_file_move(m_pFile, writen_num, read_num, move_count, move_buf, page_size);
     if (n < 0) {
       moved_length = n;
       goto cleanup;
@@ -708,11 +707,11 @@ static int zip_entries_delete_mark(struct zip_t *zip,
                                    int entry_num) {
   mz_uint64 writen_num = 0;
   mz_uint64 read_num = 0;
-  mz_uint64 deleted_length = 0;
-  mz_uint64 move_length = 0;
+  size_t deleted_length = 0;
+  size_t move_length = 0;
   int i = 0;
   int deleted_entry_num = 0;
-  int n = 0;
+  ssize_t n = 0;
 
   mz_bool *deleted_entry_flag_array =
       (mz_bool *)calloc(entry_num, sizeof(mz_bool));
@@ -759,7 +758,7 @@ static int zip_entries_delete_mark(struct zip_t *zip,
     }
 
     n = zip_files_move(pState->m_pFile, writen_num, read_num, move_length);
-    if (n != (mz_int64)move_length) {
+    if (n != (ssize_t)move_length) {
       CLEANUP(deleted_entry_flag_array);
       return n;
     }
@@ -767,7 +766,7 @@ static int zip_entries_delete_mark(struct zip_t *zip,
     read_num += move_length;
   }
 
-  zip->archive.m_archive_size -= deleted_length;
+  zip->archive.m_archive_size -= (mz_uint64)deleted_length;
   zip->archive.m_total_files = entry_num - deleted_entry_num;
 
   zip_central_dir_delete(pState, deleted_entry_flag_array, entry_num);
@@ -1510,19 +1509,22 @@ cleanup:
 }
 
 ssize_t zip_stream_copy(struct zip_t *zip, void **buf, size_t *bufsize) {
+  size_t n;
+
   if (!zip) {
     return (ssize_t)ZIP_ENOINIT;
   }
-
   zip_archive_finalize(&(zip->archive));
 
+  n = (size_t)zip->archive.m_archive_size;
   if (bufsize != NULL) {
-    *bufsize = (size_t)zip->archive.m_archive_size;
+    *bufsize = n;
   }
-  *buf = calloc(sizeof(unsigned char), zip->archive.m_archive_size);
-  memcpy(*buf, zip->archive.m_pState->m_pMem, zip->archive.m_archive_size);
 
-  return (ssize_t)zip->archive.m_archive_size;
+  *buf = calloc(sizeof(unsigned char),  n);
+  memcpy(*buf, zip->archive.m_pState->m_pMem,  n);
+
+  return (ssize_t)n;
 }
 
 void zip_stream_close(struct zip_t *zip) {
