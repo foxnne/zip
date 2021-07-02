@@ -4018,6 +4018,8 @@ static int mz_stat(const char *pPath, struct _stat *buffer) {
   return res;
 }
 
+#endif
+#if defined(_MSC_VER)
 #ifndef MINIZ_NO_TIME
 #include <sys/utime.h>
 #endif
